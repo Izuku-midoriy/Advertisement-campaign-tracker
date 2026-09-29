@@ -1,5 +1,6 @@
 package com.adtracker.selenium;
 
+import org.openqa.selenium.chrome.ChromeOptions;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -31,24 +32,25 @@ public class AdvertisementCampaignTrackerSeleniumTest {
     private static final String CAMPAIGN_NAME =
             "Selenium Test Campaign";
 
-    @BeforeAll
-    static void setUp() {
+   @BeforeAll
+static void setUp() {
+    ChromeOptions options = new ChromeOptions();
 
-        /*
-         * Selenium Manager automatically manages
-         * the ChromeDriver when supported.
-         */
-        driver = new ChromeDriver();
+    options.addArguments("--headless=new");
+    options.addArguments("--no-sandbox");
+    options.addArguments("--disable-dev-shm-usage");
+    options.addArguments("--disable-gpu");
+    options.addArguments("--window-size=1920,1080");
 
-        driver.manage().window().maximize();
+    driver = new ChromeDriver(options);
 
-        wait = new WebDriverWait(
-                driver,
-                Duration.ofSeconds(15)
-        );
+    wait = new WebDriverWait(
+            driver,
+            Duration.ofSeconds(15)
+    );
 
-        driver.get(BASE_URL);
-    }
+    driver.get(BASE_URL);
+}
 
     @AfterAll
     static void tearDown() {
@@ -93,8 +95,9 @@ public class AdvertisementCampaignTrackerSeleniumTest {
     void verifyCampaignsAreDisplayed() {
 
         wait.until(
-                ExpectedConditions.presenceOfElementLocated(
-                        By.id("campaignTableBody")
+                ExpectedConditions.textToBePresentInElementLocated(
+                        By.id("campaignTableBody"),
+                        "Docker Test Campaign"
                 )
         );
 
