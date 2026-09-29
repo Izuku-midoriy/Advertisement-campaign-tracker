@@ -23,7 +23,7 @@ services:
       retries: 10
 
   app:
-    image: advertisement-campaign-tracker:week8
+    image: ghcr.io/izuku-midoriy/advertisement-campaign-tracker:latest
     container_name: adtracker-app
 
     depends_on:
