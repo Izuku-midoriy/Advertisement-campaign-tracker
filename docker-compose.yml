@@ -1,0 +1,42 @@
+services:
+
+  mysql:
+    image: mysql:8.0
+    container_name: adtracker-mysql
+
+    environment:
+      MYSQL_DATABASE: advertisement_tracker
+      MYSQL_USER: adtracker
+      MYSQL_PASSWORD: AdTracker@123
+      MYSQL_ROOT_PASSWORD: Root@123
+
+    ports:
+      - "3307:3306"
+
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pRoot@123" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    image: advertisement-campaign-tracker:latest
+    container_name: adtracker-app
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/advertisement_tracker
+      SPRING_DATASOURCE_USERNAME: adtracker
+      SPRING_DATASOURCE_PASSWORD: AdTracker@123
+
+    ports:
+      - "8081:8081"
+
+volumes:
+  mysql_data:
