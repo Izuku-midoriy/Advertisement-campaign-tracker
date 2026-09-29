@@ -1,0 +1,113 @@
+name: Advertisement Campaign Tracker Deployment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull application image
+        run: |
+          docker pull ghcr.io/${{ github.repository_owner }}/advertisement-campaign-tracker:latest
+
+      - name: Verify Docker image
+        run: |
+          docker image inspect \
+            ghcr.io/${{ github.repository_owner }}/advertisement-campaign-tracker:latest
+
+      - name: Create Docker network
+        run: |
+          docker network create adtracker-network
+
+      - name: Start MySQL
+        run: |
+          docker run -d \
+            --name adtracker-mysql \
+            --network adtracker-network \
+            -e MYSQL_DATABASE=advertisement_tracker \
+            -e MYSQL_USER=adtracker \
+            -e MYSQL_PASSWORD=AdTracker@123 \
+            -e MYSQL_ROOT_PASSWORD=Root@123 \
+            mysql:8.0
+
+      - name: Wait for MySQL
+        run: |
+          for i in {1..30}; do
+            if docker exec adtracker-mysql \
+              mysqladmin ping -h localhost -u root -pRoot@123 --silent; then
+              echo "MySQL is ready"
+              exit 0
+            fi
+            echo "Waiting for MySQL..."
+            sleep 2
+          done
+
+          echo "MySQL failed to start"
+          docker logs adtracker-mysql
+          exit 1
+
+      - name: Start application
+        run: |
+          docker run -d \
+            --name adtracker-app \
+            --network adtracker-network \
+            -p 8081:8081 \
+            -e SPRING_DATASOURCE_URL=jdbc:mysql://adtracker-mysql:3306/advertisement_tracker \
+            -e SPRING_DATASOURCE_USERNAME=adtracker \
+            -e SPRING_DATASOURCE_PASSWORD=AdTracker@123 \
+            ghcr.io/${{ github.repository_owner }}/advertisement-campaign-tracker:latest
+
+      - name: Wait for application
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://localhost:8081/actuator/health; then
+              echo "Application is healthy"
+              exit 0
+            fi
+            echo "Waiting for application..."
+            sleep 2
+          done
+
+          echo "Application failed health check"
+          docker logs adtracker-app
+          exit 1
+
+      - name: Verify deployment
+        run: |
+          echo "=== Containers ==="
+          docker ps
+
+          echo "=== Application Health ==="
+          curl -fsS http://localhost:8081/actuator/health
+
+          echo "=== Campaign API ==="
+          curl -fsS http://localhost:8081/api/campaigns
+
+      - name: Show application logs
+        if: always()
+        run: |
+          docker logs adtracker-app
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop adtracker-app adtracker-mysql || true
+          docker rm adtracker-app adtracker-mysql || true
+          docker network rm adtracker-network || true
