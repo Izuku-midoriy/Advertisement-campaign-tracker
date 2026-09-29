@@ -81,7 +81,7 @@ void setUp() {
         String title = driver.getTitle();
 
         assertEquals(
-                "Advertisement Campaign Tracker",
+                "INTENTIONAL FAILURE",
                 title
         );
 
