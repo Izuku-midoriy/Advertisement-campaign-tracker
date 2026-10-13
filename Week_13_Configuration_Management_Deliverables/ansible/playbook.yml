@@ -1,0 +1,115 @@
+
+---
+- name: Configure and validate Advertisement Campaign Tracker runtime
+  hosts: deployment
+  gather_facts: false
+
+  vars:
+    docker_network: advertisement-campaign-tracker_default
+    mysql_container: adtracker-mysql
+    app_container: adtracker-app
+
+  tasks:
+    - name: Confirm Docker CLI is available
+      ansible.builtin.command:
+        argv: ["docker", "--version"]
+      changed_when: false
+
+    - name: Confirm Docker daemon is reachable
+      ansible.builtin.command:
+        argv: ["docker", "info"]
+      changed_when: false
+
+    - name: Check whether the required Docker network exists
+      ansible.builtin.command:
+        argv: ["docker", "network", "inspect", "{{ docker_network }}"]
+      register: network_inspect
+      changed_when: false
+      failed_when: false
+
+    - name: Create the application network when missing
+      ansible.builtin.command:
+        argv: ["docker", "network", "create", "{{ docker_network }}"]
+      when: network_inspect.rc != 0
+      changed_when: true
+
+    - name: Confirm the existing MySQL container is present
+      ansible.builtin.command:
+        argv: ["docker", "container", "inspect", "{{ mysql_container }}"]
+      changed_when: false
+
+    - name: Start existing MySQL container if stopped
+      ansible.builtin.command:
+        argv: ["docker", "start", "{{ mysql_container }}"]
+      when: >
+        lookup('pipe', 'docker inspect --format={{ "{{" }}.State.Running{{ "}}" }} ' ~ mysql_container)
+        != 'true'
+      changed_when: true
+
+    - name: Check whether MySQL is attached to the application network
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - --format
+          - "{{ '{{' }}json .NetworkSettings.Networks{{ '}}' }}"
+          - "{{ mysql_container }}"
+      register: mysql_network_state
+      changed_when: false
+
+    - name: Connect MySQL to the application network if needed
+      ansible.builtin.command:
+        argv: ["docker", "network", "connect", "{{ docker_network }}", "{{ mysql_container }}"]
+      when: docker_network not in mysql_network_state.stdout
+      changed_when: true
+
+    - name: Confirm the existing application container is present
+      ansible.builtin.command:
+        argv: ["docker", "container", "inspect", "{{ app_container }}"]
+      changed_when: false
+
+    - name: Check whether application is attached to the application network
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - --format
+          - "{{ '{{' }}json .NetworkSettings.Networks{{ '}}' }}"
+          - "{{ app_container }}"
+      register: app_network_state
+      changed_when: false
+
+    - name: Connect application to the application network if needed
+      ansible.builtin.command:
+        argv: ["docker", "network", "connect", "{{ docker_network }}", "{{ app_container }}"]
+      when: docker_network not in app_network_state.stdout
+      changed_when: true
+
+    - name: Start existing application container if stopped
+      ansible.builtin.command:
+        argv: ["docker", "start", "{{ app_container }}"]
+      when: >
+        lookup('pipe', 'docker inspect --format={{ "{{" }}.State.Running{{ "}}" }} ' ~ app_container)
+        != 'true'
+      changed_when: true
+
+    - name: Wait until the application health endpoint reports UP
+      ansible.builtin.shell: >
+        docker exec {{ app_container }}
+        wget -q -O -
+        http://localhost:8081/actuator/health
+        | grep -Eq '"status"[[:space:]]*:[[:space:]]*"UP"'
+      args:
+        executable: /bin/sh
+      register: app_health
+      changed_when: false
+      retries: 24
+      delay: 5
+      until: app_health.rc == 0
+
+    - name: Display final deployment status
+      ansible.builtin.debug:
+        msg:
+          - "Docker network: {{ docker_network }}"
+          - "MySQL container exists and is attached to the application network"
+          - "Application container exists and health check reports UP"

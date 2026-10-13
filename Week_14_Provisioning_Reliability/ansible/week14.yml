@@ -1,0 +1,247 @@
+
+---
+- name: Week 14 - Provisioning, Idempotency and Recovery
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    app_container: adtracker-app
+    candidate_container: adtracker-week14-candidate
+    docker_network: advertisement-campaign-tracker_default
+    health_url: http://host.docker.internal:8083/actuator/health
+    deployment_mode: "{{ mode | default('deploy') }}"
+
+  tasks:
+    - name: Validate requested mode
+      ansible.builtin.assert:
+        that:
+          - deployment_mode in ['deploy', 'simulate_failure', 'rollback']
+        fail_msg: "Valid modes: deploy, simulate_failure, rollback."
+
+    - name: Read production container configuration
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - "{{ app_container }}"
+      register: stable_inspect
+      changed_when: false
+      no_log: true
+
+    - name: Capture immutable stable image and datasource configuration
+      ansible.builtin.set_fact:
+        stable_image_id: "{{ (stable_inspect.stdout | from_json)[0].Image }}"
+        stable_env: "{{ (stable_inspect.stdout | from_json)[0].Config.Env }}"
+        db_url: "{{ ((stable_inspect.stdout | from_json)[0].Config.Env | select('match', '^SPRING_DATASOURCE_URL=') | first | regex_replace('^SPRING_DATASOURCE_URL=', '')) }}"
+        db_user: "{{ ((stable_inspect.stdout | from_json)[0].Config.Env | select('match', '^SPRING_DATASOURCE_USERNAME=') | first | regex_replace('^SPRING_DATASOURCE_USERNAME=', '')) }}"
+        db_password: "{{ ((stable_inspect.stdout | from_json)[0].Config.Env | select('match', '^SPRING_DATASOURCE_PASSWORD=') | first | regex_replace('^SPRING_DATASOURCE_PASSWORD=', '')) }}"
+      no_log: true
+
+    - name: Validate stable image and database configuration
+      ansible.builtin.assert:
+        that:
+          - stable_image_id | length > 0
+          - db_url | length > 0
+          - db_user | length > 0
+          - db_password | length > 0
+        fail_msg: "Stable image or datasource configuration is missing."
+      no_log: true
+
+    - name: Verify Docker network exists
+      ansible.builtin.command:
+        argv:
+          - docker
+          - network
+          - inspect
+          - "{{ docker_network }}"
+      changed_when: false
+
+    - name: Inspect existing candidate
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - "{{ candidate_container }}"
+      register: candidate_inspect
+      failed_when: false
+      changed_when: false
+      when: deployment_mode == 'deploy'
+
+    - name: Determine whether candidate is already running the stable image
+      ansible.builtin.set_fact:
+        candidate_precheck_valid: >-
+          {{
+            candidate_inspect.rc == 0
+            and (candidate_inspect.stdout | from_json)[0].Image == stable_image_id
+            and (candidate_inspect.stdout | from_json)[0].State.Running
+          }}
+      when: deployment_mode == 'deploy'
+
+    - name: Check existing candidate health
+      ansible.builtin.uri:
+        url: "{{ health_url }}"
+        method: GET
+        status_code: 200
+        return_content: true
+      register: existing_health
+      failed_when: false
+      when:
+        - deployment_mode == 'deploy'
+        - candidate_precheck_valid | default(false)
+
+    - name: Decide whether a new deployment is needed
+      ansible.builtin.set_fact:
+        candidate_needs_deploy: >-
+          {{
+            not (candidate_precheck_valid | default(false))
+            or (existing_health.status | default(0) | int != 200)
+            or ((existing_health.json | default({})).status | default('') != 'UP')
+          }}
+      when: deployment_mode == 'deploy'
+
+    - name: Remove previous candidate only when replacement is required
+      ansible.builtin.command:
+        argv:
+          - docker
+          - rm
+          - -f
+          - "{{ candidate_container }}"
+      when:
+        - deployment_mode == 'deploy'
+        - candidate_needs_deploy | default(false)
+      register: candidate_removal
+      changed_when: true
+      failed_when: false
+
+    - name: Create candidate from the immutable stable image
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - -d
+          - --name
+          - "{{ candidate_container }}"
+          - --network
+          - "{{ docker_network }}"
+          - -p
+          - "8083:8081"
+          - --env
+          - "SPRING_DATASOURCE_URL={{ db_url }}"
+          - --env
+          - "SPRING_DATASOURCE_USERNAME={{ db_user }}"
+          - --env
+          - "SPRING_DATASOURCE_PASSWORD={{ db_password }}"
+          - "{{ stable_image_id }}"
+      register: candidate_start
+      changed_when: true
+      no_log: true
+      when:
+        - deployment_mode == 'deploy'
+        - candidate_needs_deploy | default(false)
+
+    - name: Remove candidate for intentional failure simulation
+      ansible.builtin.command:
+        argv:
+          - docker
+          - rm
+          - -f
+          - "{{ candidate_container }}"
+      register: failure_removal
+      failed_when: false
+      changed_when: failure_removal.rc == 0
+      when: deployment_mode == 'simulate_failure'
+
+    - name: Deploy intentionally incorrect service
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - -d
+          - --name
+          - "{{ candidate_container }}"
+          - --network
+          - "{{ docker_network }}"
+          - -p
+          - "8083:80"
+          - nginx:alpine
+      register: broken_start
+      changed_when: true
+      when: deployment_mode == 'simulate_failure'
+
+    - name: Test application health endpoint on broken candidate
+      ansible.builtin.uri:
+        url: "{{ health_url }}"
+        method: GET
+        status_code: 200
+        return_content: true
+      register: broken_health
+      failed_when: false
+      when: deployment_mode == 'simulate_failure'
+
+    - name: Record expected failure result
+      ansible.builtin.debug:
+        msg:
+          - "Failure simulation completed."
+          - "Application health endpoint HTTP status: {{ broken_health.status | default('unavailable') }}"
+          - "An HTTP 404 or connection failure is expected for the incorrect service."
+      when: deployment_mode == 'simulate_failure'
+
+    - name: Remove failed candidate before rollback
+      ansible.builtin.command:
+        argv:
+          - docker
+          - rm
+          - -f
+          - "{{ candidate_container }}"
+      register: rollback_removal
+      failed_when: false
+      changed_when: rollback_removal.rc == 0
+      when: deployment_mode == 'rollback'
+
+    - name: Restore candidate from the previous stable image
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - -d
+          - --name
+          - "{{ candidate_container }}"
+          - --network
+          - "{{ docker_network }}"
+          - -p
+          - "8083:8081"
+          - --env
+          - "SPRING_DATASOURCE_URL={{ db_url }}"
+          - --env
+          - "SPRING_DATASOURCE_USERNAME={{ db_user }}"
+          - --env
+          - "SPRING_DATASOURCE_PASSWORD={{ db_password }}"
+          - "{{ stable_image_id }}"
+      register: rollback_start
+      changed_when: true
+      no_log: true
+      when: deployment_mode == 'rollback'
+
+    - name: Wait for stable candidate health
+      ansible.builtin.uri:
+        url: "{{ health_url }}"
+        method: GET
+        status_code: 200
+        return_content: true
+      register: final_health
+      retries: 18
+      delay: 10
+      until:
+        - final_health.status == 200
+        - final_health.json.status == 'UP'
+      when: deployment_mode in ['deploy', 'rollback']
+
+    - name: Report final deployment result
+      ansible.builtin.debug:
+        msg:
+          - "Mode: {{ deployment_mode }}"
+          - "Stable image: {{ stable_image_id }}"
+          - "Candidate health: {{ final_health.json.status }}"
+          - "Endpoint: {{ health_url }}"
+      when: deployment_mode in ['deploy', 'rollback']

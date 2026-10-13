@@ -2,7 +2,7 @@ FROM jenkins/jenkins:lts
 
 USER root
 
-# Install dependencies required by Google Chrome
+# Install dependencies required by Google Chrome and Docker CLI
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -41,6 +41,7 @@ RUN apt-get update && apt-get install -y \
     libxss1 \
     libxtst6 \
     xdg-utils \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Google Chrome
@@ -49,5 +50,8 @@ RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd6
     && apt-get install -y ./google-chrome-stable_current_amd64.deb \
     && rm google-chrome-stable_current_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
+
+# Give Jenkins access to the mounted Docker socket
+RUN usermod -aG root jenkins
 
 USER jenkins
