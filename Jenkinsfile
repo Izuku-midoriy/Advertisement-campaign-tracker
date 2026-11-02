@@ -12,29 +12,56 @@ pipeline {
 
         stage('Build') {
             steps {
-                sh 'chmod +x mvnw'
-                sh './mvnw clean compile'
+                script {
+                    if (isUnix()) {
+                        sh 'chmod +x mvnw'
+                        sh './mvnw clean compile'
+                    } else {
+                        bat 'mvnw.cmd clean compile'
+                    }
+                }
             }
         }
 
         stage('Test') {
             steps {
-                sh './mvnw test'
+                script {
+                    if (isUnix()) {
+                        sh './mvnw test'
+                    } else {
+                        bat 'mvnw.cmd test'
+                    }
+                }
             }
         }
 
         stage('Package') {
             steps {
-                sh './mvnw package -DskipTests'
+                script {
+                    if (isUnix()) {
+                        sh './mvnw package -DskipTests'
+                    } else {
+                        bat 'mvnw.cmd package -DskipTests'
+                    }
+                }
             }
         }
 
         stage('Deploy') {
             steps {
-                sh '''
-                    mkdir -p deployment
-                    cp target/*.jar deployment/advertisement-campaign-tracker.jar
-                '''
+                script {
+                    if (isUnix()) {
+                        sh '''
+                            mkdir -p deployment
+                            cp target/*.jar deployment/advertisement-campaign-tracker.jar
+                        '''
+                    } else {
+                        bat '''
+                            if not exist deployment mkdir deployment
+                            copy /Y target\\*.jar deployment\\advertisement-campaign-tracker.jar
+                        '''
+                    }
+                }
             }
         }
     }
